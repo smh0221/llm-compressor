@@ -1,0 +1,7 @@
+{
+  "model-path": "/workspace/shangminghao/models/qwen/Qwen3.5-35B-A3B",
+  "save-dir": "/workspace/shangminghao/models/qwen/Qwen3.5-35B-A3B-W8A8-gptq",
+  "num-calibration-samples": 32,
+  "max-seq-length": 8192,
+  "device-map": "auto"
+}
