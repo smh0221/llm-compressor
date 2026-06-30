@@ -1,0 +1,42 @@
+# =============================================================================
+# requirements for quant_runs/ scripts (llm-compressor fork)
+# -----------------------------------------------------------------------------
+# Why this file exists:
+#   The package was installed with `pip install -e . --no-deps`, so NONE of the
+#   runtime dependencies declared in setup.py were pulled in. This file lists
+#   everything the quant_runs/ scripts (and the underlying llmcompressor library)
+#   actually need to import and run.
+#
+# Versions below are PINNED to what is verified working in the `smh_llmc`
+# conda env (transformers 5.x line). Loosen/adjust if you rebuild the env.
+#
+# Install:
+#   pip install -r quant_runs/requirements.txt
+#   pip install -e . --no-deps          # then (re)install the local package
+# =============================================================================
+
+# ----- llmcompressor core runtime deps (mirrors setup.py install_requires) ----
+torch==2.12.0
+transformers==5.12.1            # >=5 required for *MoeForConditionalGeneration
+compressed-tensors==0.17.2a20260626
+accelerate==1.14.0
+datasets==5.0.0
+auto-round==0.13.1
+numpy==2.5.0
+pillow==10.4.0
+loguru==0.7.3
+pyyaml==6.0.2
+tqdm==4.67.3
+requests==2.34.2
+nvidia-ml-py==13.610.43
+
+# transitively required by transformers/compressed-tensors (pinned for repro)
+safetensors==0.7.0
+huggingface-hub==1.21.0
+
+# ----- image-text (flickr30k) calibration deps -----
+# `from qwen_vl_utils import process_vision_info` (the "qwen" extra in setup.py)
+qwen-vl-utils==0.0.14
+# qwen_vl_utils decodes images/videos via torchvision; also used by the
+# optional sample-generation self-check (model.generate on an image).
+torchvision==0.27.0
