@@ -1,27 +1,31 @@
-"""quant_runs 脚本共用的文件系统辅助。
-
-量化后 ``save_pretrained`` 会写出压缩权重分片及其 index，但大量*非权重*辅助文件
-（tokenizer、各类 config、生成参数等）只存在于源 checkpoint。本模块负责把它们拷过去，
-且不覆盖刚写好的（量化后）权重。
-"""
-
 import os
 import shutil
+from omegaconf import OmegaConf
+
+
+def load_config():
+    config_path = OmegaConf.from_cli().pop("config", None)
+    if config_path is None:
+        raise SystemExit("config=<path.yaml> is required on the CLI.")
+
+    cfg = OmegaConf.load(config_path)
+
+    necessary_keys = ["model_path", "save_dir"]
+    missing = [k for k in necessary_keys if cfg.get(k) is None]
+    if missing:
+        raise SystemExit(f"{', '.join(missing)} required in the YAML config ({config_path}).")
+
+    return cfg
 
 
 def copy_auxiliary_files(src_dir, dest_dir):
-    """把 src_dir 中的非权重辅助文件拷到 dest_dir。
-
-    跳过 safetensors/bin 权重分片及其 index 文件（这些由 save_pretrained /
-    save_mtp_tensors_to_checkpoint 产出，不可被原始未量化版本覆盖）。
-    dest_dir 中已存在的同名文件保持不动。
-    """
     skip_exts = (".safetensors", ".bin")
     skip_names = {
         "model.safetensors.index.json",
         "pytorch_model.bin.index.json",
     }
     os.makedirs(dest_dir, exist_ok=True)
+
     for name in os.listdir(src_dir):
         src_path = os.path.join(src_dir, name)
         if not os.path.isfile(src_path):

@@ -35,6 +35,7 @@ pip install -e . --no-deps
 
 - **transformers >= 5**：脚本用的 MoE `*ForConditionalGeneration` 类（如 `Qwen3_5MoeForConditionalGeneration`）仅 5.x 提供。
 - **qwen_vl_utils + torchvision**：图文校准所需（`process_vision_info`）。`requirements.txt` 已含；亦可 `pip install llmcompressor[qwen]`（仅含 `qwen_vl_utils`，图文校准还需 torchvision）。
+- **omegaconf**：`common/` 的配置合并（YAML config + CLI dotlist）所需，`requirements.txt` 已含。
 - torch/torchvision 已去掉 `+cuXXX` 本地标签以便移植；需指定 CUDA wheel 时加 `--index-url https://download.pytorch.org/whl/cu126`。
 
 > 已校验组合：`transformers==5.12.1`、`qwen_vl_utils` 均可用。
@@ -44,7 +45,7 @@ pip install -e . --no-deps
 ## 三、目录结构与约定
 
 - **一级目录 = 模型系列**：当前有 `qwen/`，后续按需新增 `glm/`、`deepseek/` …
-- **二级 = 具体脚本（方法_精度）**：每个脚本可单独运行；CLI/config 等公共逻辑统一抽到 `common/`。
+- **二级 = 具体脚本（方法_精度）**：每个脚本可单独运行；config 加载等公共逻辑统一抽到 `common/`。
 
 ```
 quant_runs/
@@ -52,20 +53,18 @@ quant_runs/
 ├── requirements.txt               # 运行依赖（因 `-e . --no-deps` 安装需手动补齐）
 ├── __init__.py                    # 使 quant_runs 成为可导入包（脚本 import common 用）
 ├── common/                        # 跨脚本公共模块
-│   ├── __init__.py                # 导出 build_arg_parser / merge_config / resolve_save_dir / copy_auxiliary_files
-│   ├── cli.py                     # CLI/JSON-config 公共逻辑
-│   └── io.py                      # 文件系统辅助（拷贝非权重辅助文件）
+│   ├── __init__.py                # 导出 load_config / copy_auxiliary_files
+│   └── io.py                      # config 加载（OmegaConf 读 YAML）+ 文件系统辅助（拷贝非权重辅助文件）
 └── qwen/
     ├── qwen3_5_moe_gptq_w8a8.py                    # 脚本
-    ├── qwen3_5_moe_gptq_w8a8.config.json.example   # 配置模板（占位路径）
+    ├── qwen3_5_moe_gptq_w8a8.config.yaml           # 配置（本机路径）
     └── run_qwen3_5_moe_gptq_w8a8.sh                # 运行包装（读 config）
 ```
 
-每个脚本配套**三件套**：`<name>.py` + `<name>.config.json` + `run_<name>.sh`。仓库内只提交 `*.config.json.example` 模板（占位路径），首次使用前复制成真实 `*.config.json` 并填好本机路径——后者含私有绝对路径，已被 `.gitignore` 忽略：
+每个脚本配套**三件套**：`<name>.py` + `<name>.config.yaml` + `run_<name>.sh`。config 用 YAML，键为 snake_case（与 `.py` 里 `cfg.xxx` 属性同名，如 `model_path`），首次使用前填好本机路径：
 
 ```bash
-cp quant_runs/qwen/qwen3_5_moe_gptq_w8a8.config.json{.example,}
-# 然后编辑 qwen3_5_moe_gptq_w8a8.config.json 填入 model-path / save-dir
+# 编辑 qwen3_5_moe_gptq_w8a8.config.yaml 填入 model_path / save_dir
 ```
 
 glm/、deepseek/ 等后续按需补充（沿用下述命名约定）。
@@ -99,21 +98,14 @@ glm/、deepseek/ 等后续按需补充（沿用下述命名约定）。
 
 跨脚本一致的逻辑统一抽到 `quant_runs/common/`，对外导出：
 
-**`cli.py` — CLI 解析与 JSON-config 合并**
+**`io.py` — config 加载 + 文件系统辅助**
 
 | 函数 | 作用 |
 | --- | --- |
-| `build_arg_parser(description)` | 返回预置全部**通用 flag**（`--config` / `--model-path` / `--save-dir` / `--num-calibration-samples` / `--max-seq-length` / `--dataset-id` / `--dataset-split` / `--device-map` / `--seed` / `--preprocessing-num-workers` / `--dataloader-num-workers`）的 `ArgumentParser`。脚本在其上追加特有 flag（如 `--smoothing-strength`）。 |
-| `merge_config(parser, args, defaults=None)` | 把 JSON config（kebab-case 键）合并进已解析的 args，优先级 **CLI flag > config > 内置默认**；kebab→snake、未知键报错、`model-path` 必填校验。`defaults=` 用于追加脚本特有默认值。 |
-| `resolve_save_dir(model_path, save_dir, default_suffix)` | 解析输出目录：给了 `--save-dir` 用之，否则取 `<model_name>-<default_suffix>` 落在输入目录同级。各脚本传入自己的后缀（如 `W8A8-gptq`）。 |
-
-**`io.py` — 文件系统辅助**
-
-| 函数 | 作用 |
-| --- | --- |
+| `load_config()` | 从 YAML config 加载并返回 OmegaConf 配置对象（可 `cfg.xxx` 属性访问）。CLI 只接受唯一键 `config=<path>` 指定 YAML 文件路径（缺失时友好退出）；`model_path` / `save_dir` 缺失时友好退出。**全部参数**（通用 + 脚本特有）都写在 YAML 里，不再有代码内置默认——脚本用到的键须在 YAML 写全，漏写则脚本访问时报 `ConfigAttributeError`。 |
 | `copy_auxiliary_files(src_dir, dest_dir)` | 把源 checkpoint 中的**非权重辅助文件**（tokenizer、各类 config 等）拷到输出目录；跳过 `.safetensors`/`.bin` 权重分片及其 index（由 `save_pretrained` / `save_mtp_tensors_to_checkpoint` 产出），不覆盖已存在的同名文件。 |
 
-通用默认值在 `common/cli.py` 的 `COMMON_DEFAULTS`（`num_calibration_samples=32`、`max_seq_length=8192`、`dataset_id="lmms-lab/flickr30k"`、`seed=42`、`preprocessing_num_workers=2`、`dataloader_num_workers=2`），脚本可经 `merge_config(..., defaults=...)` 扩展/覆盖。
+**每个脚本一个 YAML**，写全该脚本用到的所有参数（通用 + 特有）。通用参数键：`model_path`、`save_dir`（二者必填）、`num_calibration_samples`、`max_seq_length`、`dataset_id`、`dataset_split`、`device_map`、`seed`、`preprocessing_num_workers`、`dataloader_num_workers`；脚本特有键（如 `smoothing_strength`）也一并写入。可参照同名 `*.config.yaml` 现有字段。
 
 > 脚本顶部用 `sys.path.insert(0, <repo_root>)` 后再 `from quant_runs.common import ...`，因此无论从哪个 CWD、用 `python xxx.py` 还是 `run_*.sh` 启动都能找到 `common`（`quant_runs` 未随 `pip install -e .` 安装到环境）。
 
@@ -121,34 +113,30 @@ glm/、deepseek/ 等后续按需补充（沿用下述命名约定）。
 
 ## 五、运行方式
 
-每个脚本支持三种调用，优先级 **CLI flag > config 文件值 > 内置默认**。脚本**不内置 conda**，请先自行激活环境：
+每个脚本支持两种调用，配置一律写在 **YAML config** 里（每个脚本一个 YAML，含全部参数）。脚本**不内置 conda**，请先自行激活环境：
 
 ```bash
 conda activate <your-env>      # 或 source /path/to/venv/bin/activate
 
-# 1) 推荐：run_*.sh（读同名 .config.json，可 CONFIG= 覆盖配置路径）
+# 1) 推荐：run_*.sh（读同名 .config.yaml，可 CONFIG= 覆盖配置路径）
 bash quant_runs/qwen/run_qwen3_5_moe_gptq_w8a8.sh
 
-# 2) 直接 .py + config
+# 2) 直接 .py + config（CLI 只接受 config=<path> 一个键）
 python quant_runs/qwen/qwen3_5_moe_gptq_w8a8.py \
-    --config quant_runs/qwen/qwen3_5_moe_gptq_w8a8.config.json
-
-# 3) 直接 .py + CLI flags
-python quant_runs/qwen/qwen3_5_moe_gptq_w8a8.py \
-    --model-path /path/to/Qwen3.5-35B-A3B \
-    --save-dir   /path/to/Qwen3.5-35B-A3B-W8A8-gptq
+    config=quant_runs/qwen/qwen3_5_moe_gptq_w8a8.config.yaml
 ```
 
-- config 用 **kebab-case** 字段（与 CLI flag 同名，如 `model-path`）；出现未知字段会报错。
-- 全部可用字段及默认值见上文「四、common/ 公共模块」，或运行 `python <脚本>.py --help` 查看。
+- config 用 YAML、**snake_case** 字段（如 `model_path`）；脚本用到的键须写全（无代码内置默认），`model_path` / `save_dir` 必填，脚本特有键（如 `smoothing_strength`）也一并写入。
+- CLI **只接受唯一键** `config=<path>` 指定 YAML 文件路径；其余 `key=value` 会被忽略——所有设置改写进 YAML。
+- 全部参数键见上文「四、common/ 公共模块」，或直接参照同名 `*.config.yaml` 现有字段。
 
 ---
 
 ## 六、设计说明
 
-- **公共逻辑抽到 `common/`**：CLI 解析、JSON-config 合并、save-dir 解析、辅助文件拷贝在所有脚本间一致，脚本本体只保留各自的模型加载、校准数据、recipe 等差异部分。
+- **公共逻辑抽到 `common/`**：配置加载（OmegaConf 读 YAML）、辅助文件拷贝在所有脚本间一致，脚本本体只保留各自的模型加载、校准数据、recipe 等差异部分。全部参数写在每个脚本的 YAML 里，无代码内置默认。
 - **MoE 模型** 必须用 `load_context(<ModelClass>)` 包裹 `from_pretrained`，并在 `oneshot` 传 `moe_calibrate_all_experts=True`，否则 3D 专家张量无法线性化为可量化的 2D Linear；MTP 层不经 `*ForConditionalGeneration` 加载，需用 `save_mtp_tensors_to_checkpoint` 从原 checkpoint 原样拷入输出目录。
-- **产物输出**：脚本默认把量化结果写到输入目录同级（由 `--save-dir` 控制）；量化产物本身不纳入版本控制。仓库 `.gitignore` 仅额外忽略含本机私有路径的真实 `*.config.json`（保留 `*.config.json.example` 模板）。
+- **产物输出**：脚本默认把量化结果写到输入目录同级（由 `save_dir` 控制）；量化产物本身不纳入版本控制。
 
 ---
 

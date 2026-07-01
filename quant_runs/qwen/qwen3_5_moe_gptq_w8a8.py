@@ -25,47 +25,38 @@ from llmcompressor.utils import load_context
 # 把仓库根（本文件上两级）加入 sys.path，使任意 CWD/启动方式下都能 import quant_runs.common
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from quant_runs.common import (
-    build_arg_parser,
     copy_auxiliary_files,
-    merge_config,
-    resolve_save_dir,
+    load_config,
 )
 
 
 def parse_args():
-    parser = build_arg_parser(
-        description=(
-            "Quantize Qwen3.5 MoE to W8A8 (int8) via GPTQ with image-text "
-            "(flickr30k) calibration."
-        ),
-    )
-    args = parser.parse_args()
-    return merge_config(parser, args)
+    return load_config()
 
 
 def main():
-    args = parse_args()
+    cfg = parse_args()
 
-    model_path = args.model_path.rstrip("/")
-    save_dir = resolve_save_dir(model_path, args.save_dir, "W8A8-gptq")
+    model_path = cfg.model_path.rstrip("/")
+    save_dir = cfg.save_dir
 
-    dataset_split = args.dataset_split
+    dataset_split = cfg.dataset_split
     if dataset_split is None:
-        dataset_split = f"test[:{args.num_calibration_samples}]"
+        dataset_split = f"test[:{cfg.num_calibration_samples}]"
 
     # 加载模型，MoE 须用 load_context 包裹以线性化专家张量
     with load_context(Qwen3_5MoeForConditionalGeneration):
         model = Qwen3_5MoeForConditionalGeneration.from_pretrained(
             model_path,
-            device_map=args.device_map,
+            device_map=cfg.device_map,
             dtype="auto",
             local_files_only=True,
         )
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
 
     # 加载校准数据集，flickr30k 图文数据集
-    ds = load_dataset(args.dataset_id, split=dataset_split)
-    ds = ds.shuffle(seed=args.seed)
+    ds = load_dataset(cfg.dataset_id, split=dataset_split)
+    ds = ds.shuffle(seed=cfg.seed)
 
     def preprocess_and_tokenize(example):
         # 预处理，把图像编码成 base64 data URI
@@ -100,7 +91,7 @@ def main():
             images=image_inputs,
             videos=video_inputs,
             padding=False,
-            max_length=args.max_seq_length,
+            max_length=cfg.max_seq_length,
             truncation=True,
         )
 
@@ -140,13 +131,13 @@ def main():
         tokenizer=model_path,
         dataset=ds,
         recipe=recipe,
-        max_seq_length=args.max_seq_length,
-        num_calibration_samples=args.num_calibration_samples,
+        max_seq_length=cfg.max_seq_length,
+        num_calibration_samples=cfg.num_calibration_samples,
         trust_remote_code_model=True,
         data_collator=data_collator,
         moe_calibrate_all_experts=True,
-        preprocessing_num_workers=args.preprocessing_num_workers,
-        dataloader_num_workers=args.dataloader_num_workers,
+        preprocessing_num_workers=cfg.preprocessing_num_workers,
+        dataloader_num_workers=cfg.dataloader_num_workers,
         sequential_prefetch=True,
     )
 
