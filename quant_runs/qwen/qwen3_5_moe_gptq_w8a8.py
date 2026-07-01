@@ -39,10 +39,7 @@ def main():
 
     model_path = cfg.model_path.rstrip("/")
     save_dir = cfg.save_dir
-
-    dataset_split = cfg.dataset_split
-    if dataset_split is None:
-        dataset_split = f"test[:{cfg.num_calibration_samples}]"
+    dataset_split = f"{cfg.dataset_split}[:{cfg.num_calibration_samples}]"
 
     # 加载模型，MoE 须用 load_context 包裹以线性化专家张量
     with load_context(Qwen3_5MoeForConditionalGeneration):
@@ -85,7 +82,9 @@ def main():
         )
         image_inputs, video_inputs = process_vision_info(messages)
 
-        # 分词
+        # apply_chat_template 已把图像替换为占位 token，text 里只剩占位符、无像素数据；
+        # 真实像素由 process_vision_info 从 messages 解码得到，故须通过 images= 单独传入。
+        # processor 内部再把 pixel_values 与 text 中的图像占位符按位置对齐。
         return processor(
             text=[text],
             images=image_inputs,
@@ -95,16 +94,29 @@ def main():
             truncation=True,
         )
 
+    # 逐样本预处理，remove_columns 删除原始列（image/caption），只保留 processor 产出的字段。
+    # map 后各字段为嵌套 list（Arrow 存储），tensor 化在 data_collator 里进行；下列 shape 指其逻辑形状：
+    #   input_ids:         (1, seq_len)          文本 token 序列，图像位置为 <|image_pad|> 占位 token
+    #   attention_mask:    (1, seq_len)          注意力掩码（padding=False，基本全 1）
+    #   mm_token_type_ids: (1, seq_len)          多模态类型标记，逐 token 区分文本/图像位置
+    #   pixel_values:      (1, num_patches, patch_dim)  打平的图像 patch（外层 1 来自 text=[text] 的 batch 维）
+    #   image_grid_thw:    (1, 3)                每张图的 patch 网格 [T, H, W]
     ds = ds.map(preprocess_and_tokenize, remove_columns=ds.column_names)
 
-    # 多模态 data collator
+    # 多模态 data collator：把 dataset 中一条样本的嵌套 list 转为 tensor 喂给模型。
+    # 校准逐样本进行，故 batch_size 固定为 1（assert 保证）。
     def data_collator(batch):
         assert len(batch) == 1
         collated = {}
         for key, value in batch[0].items():
             if key == "pixel_values":
+                # pixel_values 因 text=[text] 多带一层 batch 维 (1, num_patches, patch_dim)，
+                # 单样本校准下该维冗余，squeeze(0) 压回 (num_patches, patch_dim)；
+                # 同时转 bfloat16 以对齐模型（bf16 加载）的视觉塔精度，避免 dtype 不匹配。
                 collated[key] = torch.tensor(value, dtype=torch.bfloat16).squeeze(0)
             else:
+                # input_ids / attention_mask / mm_token_type_ids 等文本类字段，
+                # 保留 (1, seq_len) 的 batch 维（模型 forward 本就期望该维），直接转 tensor。
                 collated[key] = torch.tensor(value)
         return collated
 
