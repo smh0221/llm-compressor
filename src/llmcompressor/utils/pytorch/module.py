@@ -36,10 +36,14 @@ except Exception as _err:
 
 
 try:
-    from transformers.modeling_utils import Conv1D as TransformerConv1D
-except Exception as _err:
-    gpt_conv1d_err = _err
-    TransformerConv1D = None
+    # transformers>=5 迁移到 transformers.pytorch_utils
+    from transformers.pytorch_utils import Conv1D as TransformerConv1D
+except Exception:
+    try:
+        from transformers.modeling_utils import Conv1D as TransformerConv1D
+    except Exception as _err:
+        gpt_conv1d_err = _err
+        TransformerConv1D = None
 
 
 __all__ = [
