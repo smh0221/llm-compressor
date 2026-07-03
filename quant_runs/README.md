@@ -31,9 +31,10 @@ pip install -r quant_runs/requirements.txt
 pip install -e . --no-deps
 ```
 
-依赖要点（详见 `requirements.txt`，已对齐实测可用组合，transformers 5.x 线）：
+依赖要点（版本区间对齐 `setup.py` 的 `install_requires` 上限，详见 `requirements.txt`；有两处刻意例外）：
 
-- **transformers >= 5**：脚本用的 MoE `*ForConditionalGeneration` 类（如 `Qwen3_5MoeForConditionalGeneration`）仅 5.x 提供。
+- **transformers `>=5.0.0`（例外，不随 setup.py 上限）**：setup.py 上限为 `<=4.57.6`，但脚本用的 MoE `*ForConditionalGeneration` 类（如 `Qwen3_5MoeForConditionalGeneration`）仅 5.x 提供，故刻意用 5.x。
+- **compressed-tensors `>=0.14.1a2`（例外，用 dev 线 a 版）**：setup.py 的 release 分支固定 `==0.14.0`，反低于所需，故采用 dev 线写法。
 - **qwen_vl_utils + torchvision**：图文校准所需（`process_vision_info`）。`requirements.txt` 已含；亦可 `pip install llmcompressor[qwen]`（仅含 `qwen_vl_utils`，图文校准还需 torchvision）。
 - **omegaconf**：`common/` 的配置合并（YAML config + CLI dotlist）所需，`requirements.txt` 已含。
 - torch/torchvision 已去掉 `+cuXXX` 本地标签以便移植；需指定 CUDA wheel 时加 `--index-url https://download.pytorch.org/whl/cu126`。
