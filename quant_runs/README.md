@@ -20,25 +20,38 @@
 
 本仓库以 `pip install -e . --no-deps` 安装，**setup.py 声明的运行依赖不会被自动安装**，需先用 `quant_runs/requirements.txt` 补齐。
 
+> **本机 torch 为定制版本**（`2.9.0`），**不可替换为官方 torch**。故 `requirements.txt` 里 torch/torchvision 刻意钉在定制版本对应号，安装时须用 `--no-deps` 保护，详见下文。
+
 ```bash
 # 0) 自备并激活一个 Python 环境（conda env 或 venv 均可），Python >= 3.10
 conda activate <your-env>      # 或 source /path/to/venv/bin/activate
 
-# 1) 安装运行依赖（quant_runs/ 脚本 + llmcompressor 库所需）
-pip install -r quant_runs/requirements.txt
+# 1) 安装运行依赖（--no-deps 绕过传递依赖对 torch 的强制，保护定制 torch 轮子）
+pip install -r quant_runs/requirements.txt --no-deps
 
 # 2) 以可编辑模式安装本地包（不带依赖，依赖由上一步提供）
 pip install -e . --no-deps
 ```
 
-依赖要点（详见 `requirements.txt`，已对齐实测可用组合，transformers 5.x 线）：
+依赖要点（详见 `requirements.txt`，已对齐本机实测可用组合，transformers 5.x 线）：
 
+- **必须 `--no-deps` 安装**：`compressed-tensors>=0.17` 强制要求 `torch>=2.10.0`，而本机定制 torch 为 `2.9.0`。不加 `--no-deps` 会触发 `ResolutionImpossible` 冲突并试图卸载定制轮子。`--no-deps` 跳过依赖解析，保住 torch 2.9.0。
+- **torch / torchvision 钉定制版本**：`torch==2.9.0`、`torchvision==0.24.0`。**切勿升级到 setup.py 要求的 2.10+**，否则覆盖定制 torch 轮子、多卡不可用。
+- **numpy 受 Python 版本上限约束**：`numpy==2.2.6`。`numpy>=2.3` 要求 Python≥3.11、`>=2.5` 要求 Python≥3.12，本机 Python 3.10 装不了，故取 3.10 可用的最高版 2.2.6（偏离 setup.py 的钉版）。
 - **transformers >= 5**：脚本用的 MoE `*ForConditionalGeneration` 类（如 `Qwen3_5MoeForConditionalGeneration`）仅 5.x 提供。
 - **qwen_vl_utils + torchvision**：图文校准所需（`process_vision_info`）。`requirements.txt` 已含；亦可 `pip install llmcompressor[qwen]`（仅含 `qwen_vl_utils`，图文校准还需 torchvision）。
 - **omegaconf**：`common/` 的配置合并（YAML config + CLI dotlist）所需，`requirements.txt` 已含。
-- torch/torchvision 已去掉 `+cuXXX` 本地标签以便移植；需指定 CUDA wheel 时加 `--index-url https://download.pytorch.org/whl/cu126`。
 
-> 已校验组合：`transformers==5.12.1`、`qwen_vl_utils` 均可用。
+> 已校验组合（x0.12.0 基线）：`torch==2.9.0`（定制版本）、`transformers==5.12.1`、`compressed-tensors==0.17.2a20260626`、`llmcompressor==0.12.1.dev`，Qwen3.5-35B-A3B GPTQ W8A8 可跑通。
+
+### 多卡运行
+
+- 卡选择用 `CUDA_VISIBLE_DEVICES`；某卡被占时避开它，如 `export CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7` 避开卡 0。
+- config 里 `device_map: auto` 会把大模型（如 35B）按层分片到多张卡（模型并行），单卡放不下时必需。
+
+### torch 兼容垫片（common/torch_compat.py）
+
+`compressed-tensors>=0.17` 用了 `torch.accelerator.get_memory_info`（torch 2.10 才有的 API），定制 torch 2.9 缺此 API。`common/torch_compat.py` 用等价的 `torch.cuda.mem_get_info` 补齐，`import quant_runs.common` 时自动生效（见 `common/__init__.py`）。此垫片仅落在 `quant_runs/` 内，不改动 llmcompressor 库源码，保持与上游隔离、rebase 干净。
 
 ---
 
@@ -53,8 +66,9 @@ quant_runs/
 ├── requirements.txt               # 运行依赖（因 `-e . --no-deps` 安装需手动补齐）
 ├── __init__.py                    # 使 quant_runs 成为可导入包（脚本 import common 用）
 ├── common/                        # 跨脚本公共模块
-│   ├── __init__.py                # 导出 load_config / copy_auxiliary_files
-│   └── io.py                      # config 加载（OmegaConf 读 YAML）+ 文件系统辅助（拷贝非权重辅助文件）
+│   ├── __init__.py                # 导出 load_config / copy_auxiliary_files，并自动应用 torch 兼容垫片
+│   ├── io.py                      # config 加载（OmegaConf 读 YAML）+ 文件系统辅助（拷贝非权重辅助文件）
+│   └── torch_compat.py            # torch 兼容垫片，为定制 torch 2.9 补齐 compressed-tensors 0.17 依赖的新 API
 └── qwen/
     ├── qwen3_5_moe_gptq_w8a8.py                    # 脚本
     ├── qwen3_5_moe_gptq_w8a8.config.yaml           # 配置（本机路径）
@@ -104,6 +118,12 @@ glm/、deepseek/ 等后续按需补充（沿用下述命名约定）。
 | --- | --- |
 | `load_config()` | 从 YAML config 加载并返回 OmegaConf 配置对象（可 `cfg.xxx` 属性访问）。CLI 只接受唯一键 `config=<path>` 指定 YAML 文件路径（缺失时友好退出）；`model_path` / `save_dir` 缺失时友好退出。**全部参数**（通用 + 脚本特有）都写在 YAML 里，不再有代码内置默认——脚本用到的键须在 YAML 写全，漏写则脚本访问时报 `ConfigAttributeError`。 |
 | `copy_auxiliary_files(src_dir, dest_dir)` | 把源 checkpoint 中的**非权重辅助文件**（tokenizer、各类 config 等）拷到输出目录；跳过 `.safetensors`/`.bin` 权重分片及其 index（由 `save_pretrained` / `save_mtp_tensors_to_checkpoint` 产出），不覆盖已存在的同名文件。 |
+
+**`torch_compat.py` — torch 兼容垫片**
+
+| 函数 | 作用 |
+| --- | --- |
+| `apply_torch_compat()` | 为定制 torch 2.9 补齐 `torch.accelerator.get_memory_info`（compressed-tensors 0.17 依赖、torch 2.10 才有的 API），用等价的 `torch.cuda.mem_get_info` 实现。`import quant_runs.common` 时自动调用（见 `common/__init__.py`），脚本无需显式调用。仅在 API 缺失时打补丁，torch≥2.10 环境下为空操作。 |
 
 **每个脚本一个 YAML**，写全该脚本用到的所有参数（通用 + 特有）。通用参数键：`model_path`、`save_dir`（二者必填）、`num_calibration_samples`、`max_seq_length`、`dataset_id`、`dataset_split`、`device_map`、`seed`、`preprocessing_num_workers`、`dataloader_num_workers`；脚本特有键（如 `smoothing_strength`）也一并写入。可参照同名 `*.config.yaml` 现有字段。
 
