@@ -140,7 +140,7 @@ def main():
 
     # 量化前预览覆盖情况，打印各 Linear 是否被量化及命中的忽略规则
     # 同时写出可交互 HTML（<details> 折叠/展开）到 save_dir 同级
-    preview_coverage(model, recipe, out_path=f"{save_dir}_coverage.html")
+    # preview_coverage(model, recipe, out_path=f"{save_dir}_coverage.html")
 
     # 量化
     oneshot(
